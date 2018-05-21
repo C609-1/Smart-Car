@@ -7,4 +7,4 @@ clean:
 	make -C $(KERN_DIR) M=`pwd` modules clean
 	rm -rf modules.order
 
-obj-m	+= serial_test.o
+obj-m	+= esp8266.o
