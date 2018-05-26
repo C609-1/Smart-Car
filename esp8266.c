@@ -17,7 +17,7 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/irq.h>
-
+#include <linux/file.h>
 #include <asm/uaccess.h>
 #include <asm/irq.h>
 #include <asm/io.h>
@@ -25,6 +25,11 @@
 //#include <asm/hardware.h>
 #include <linux/unistd.h>
 #include <linux/slab.h>
+#include <linux/tty.h>
+#include <linux/syscalls.h>
+#include <linux/termios.h>
+#include <linux/fcntl.h>
+
 
 #define DELAYTIME 104       //单位us，波特率为9600时，每位的延时时间
 
@@ -33,6 +38,7 @@ static struct class_device *esp8266_class_dev;
 
 volatile unsigned long *gpbcon = NULL;
 volatile unsigned long *gpbdat = NULL;
+
 
 /*串口写函数*/
 static void uart_write(unsigned char data)
@@ -68,31 +74,32 @@ static void uart_write(unsigned char data)
 /*串口读函数*/
 static unsigned char uart_read(void)
 {
-    unsigned char result;
-    int i = 8;
-    unsigned char port_val = 0x00;
+    struct file *filep;
+    int ret;
+    char data;
+    mm_segment_t old_fs;
     
-    /*等过起始位*/
-    udelay(DELAYTIME);
-    while (i--)
+    filep = filp_open("/dev/ttySAC1", O_RDWR, 0);
+    if (IS_ERR(filep))
     {
-        result >>= 1;
-        port_val=readw(gpbdat);
-        if((port_val|0x7f) == 0xff)
-        {
-            result |= 0x80;
-        }
-        udelay(DELAYTIME);
+        printk("filp_open failed!\n");
+        return 1;
     }
-    /*等过结束位*/
-    udelay(DELAYTIME);
-    return result;
+    old_fs = get_fs();
+    set_fs(get_ds());
+    ret = filep->f_op->read(filep, &data, 1, &filep->f_pos);
+    if (ret > 0)
+        printk("data is: %0x\n", data);
+    set_fs(old_fs);
+    filp_close(filep, NULL);
+    
+    return data;
 }
 
 static void esp8266_GPIO_CFG(void)
 {
     /*配置GPIO引脚，模拟串口*/
-    /* 配置GPB7为串口输入引脚，GPB8为串口输出引脚(相对于arm板)*/
+    /* 配置GPB7为串口输入(读)引脚，GPB8为串口输出(写)引脚(相对于arm板)*/
     *gpbcon &= ~(0x3<<(7*2));
     *gpbcon |= (0x1<<(8*2));
 }
@@ -116,7 +123,7 @@ static ssize_t esp8266_write(struct file *file, const char __user *buf, size_t c
     }
     for (i = 0; i < count; i++)
     {
-        error = copy_from_user(&tmp[i],buf,1);
+        error = copy_from_user(&tmp[i], buf, 1);
         if (error < 0)
             printk("copy from user failed!");
         else
@@ -131,12 +138,18 @@ static ssize_t esp8266_write(struct file *file, const char __user *buf, size_t c
 
 static ssize_t esp8266_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
+    unsigned char data;
+    int error = 0;
+    
+    data = uart_read();
+    error = copy_to_user(buf, (void *)data, count);
+    if (error < 0)
+        printk("copy_to_user failed!\n");
     return 0;
 }
 
 static int esp8266_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
 {
-    
     return 0;
 }
 
@@ -155,7 +168,7 @@ static int esp8266_init(void)
     major = register_chrdev(0, "esp8266", &esp8266_fops);    // 注册, 告诉内核
     esp8266_class = class_create(THIS_MODULE, "esp8266");
     esp8266_class_dev = (struct class_device*)device_create(esp8266_class, NULL, MKDEV(major, 0), NULL, "esp8266"); /* 只要加载后就会自动创建设备节点 /dev/esp8266 */
-
+    
     /*映射引脚*/
     gpbcon = (volatile unsigned long *)ioremap(0x56000010, 12);
     gpbdat = gpbcon + 1;
