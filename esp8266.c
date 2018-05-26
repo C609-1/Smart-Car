@@ -29,6 +29,8 @@
 #include <linux/syscalls.h>
 #include <linux/termios.h>
 #include <linux/fcntl.h>
+#include <linux/poll.h>
+#include <linux/time.h>
 
 
 #define DELAYTIME 104       //单位us，波特率为9600时，每位的延时时间
@@ -39,36 +41,27 @@ static struct class_device *esp8266_class_dev;
 volatile unsigned long *gpbcon = NULL;
 volatile unsigned long *gpbdat = NULL;
 
+extern long tty_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
 /*串口写函数*/
 static void uart_write(unsigned char data)
 {
-    int i = 8;
+    struct file *filep;
+    int ret;
+    mm_segment_t old_fs;
     
-    /*发送起始位*/
-    *gpbdat &=~(1<<8);
-    udelay(DELAYTIME);
-    
-    /*发送8位数据位*/
-    unsigned char tmp;
-    while (i--)
+    filep = filp_open("/dev/ttySAC1", O_RDWR | O_NDELAY, 0777);
+    if (IS_ERR(filep))
     {
-        tmp = data & 0x01;
-        /*先发送低位*/
-        if (tmp == 0x01)
-        {
-            *gpbdat |=(1<<8);
-        }
-        else
-        {
-            *gpbdat &=~(1<<8);
-        }
-        udelay(DELAYTIME);
-        data = data >> 1;
+        printk("filp_open failed!\n");
+        return;
     }
-    /*发送校验位*/
-    *gpbdat |= (1<<8);
-    udelay(DELAYTIME);
+    old_fs = get_fs();
+    set_fs(get_ds());
+    vfs_write(filep, &data, 1, &filep->f_pos);
+    printk("data is: %0x\n", data);
+    set_fs(old_fs);
+    filp_close(filep, NULL);
 }
 
 /*串口读函数*/
@@ -78,61 +71,108 @@ static unsigned char uart_read(void)
     int ret;
     char data;
     mm_segment_t old_fs;
+    long timeout = 1000;
+    int length = 0;
+    struct termios settings;
     
-    filep = filp_open("/dev/ttySAC1", O_RDWR, 0);
+    old_fs = get_fs();
+    set_fs(get_ds());
+    
+    filep = filp_open("/dev/ttySAC1", O_RDWR | O_NDELAY , 0777);
     if (IS_ERR(filep))
     {
         printk("filp_open failed!\n");
         return 1;
     }
-    old_fs = get_fs();
-    set_fs(get_ds());
-    ret = filep->f_op->read(filep, &data, 1, &filep->f_pos);
-    if (ret > 0)
+
+    if (filep->f_op->poll)
+    {
+        struct poll_wqueues table;
+        struct timeval start, now;
+        
+        tty_ioctl(filep, TCGETS, (unsigned long)&settings);
+        tty_ioctl(filep, TCIOFLUSH, (unsigned long)&settings);
+        do_gettimeofday(&start);
+        poll_initwait(&table);
+        while (1)
+        {
+            long elapsed;
+            int mask; 
+
+            mask = filep->f_op->poll(filep, &table.pt); 
+            if (mask & (POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR)) 
+            { 
+                break; 
+            } 
+            do_gettimeofday(&now); 
+            elapsed = (1000000 * (now.tv_sec - start.tv_sec) + now.tv_usec - start.tv_usec); 
+            if (elapsed > timeout) 
+            { 
+                break; 
+            } 
+            set_current_state(TASK_INTERRUPTIBLE); 
+            schedule_timeout(((timeout - elapsed) * HZ) / 10000); 
+        }
+        poll_freewait(&table);
+    }
+    filep->f_pos = 0; 
+    if ((length = filep->f_op->read(filep, &data, 1, &filep->f_pos)) > 0) 
+    {
         printk("data is: %0x\n", data);
+    }
+    else 
+    { 
+        printk("debug: failed\n");
+    }
+    printk("length is: %d\n", length);
+    printk("data is: %0x\n", data);
     set_fs(old_fs);
     filp_close(filep, NULL);
     
     return data;
 }
 
-static void esp8266_GPIO_CFG(void)
-{
-    /*配置GPIO引脚，模拟串口*/
-    /* 配置GPB7为串口输入(读)引脚，GPB8为串口输出(写)引脚(相对于arm板)*/
-    *gpbcon &= ~(0x3<<(7*2));
-    *gpbcon |= (0x1<<(8*2));
-}
-
 static int esp8266_open(struct inode *inode, struct file *file)
 {
-    esp8266_GPIO_CFG();
+    struct file *f;
+    struct termios settings;
+    mm_segment_t oldfs;
+    
+    oldfs = get_fs(); 
+    set_fs(KERNEL_DS);  
+    // Set speed 
+     
+    f = filp_open("/dev/ttySAC1", O_RDWR | O_NDELAY | O_NOCTTY , 0777);
+    f->f_op->unlocked_ioctl(f, TCGETS, (unsigned long)&settings); 
+
+    settings.c_cflag &= ~CBAUD; 
+    settings.c_cflag |= B9600; 
+
+    settings.c_cflag |= (CLOCAL | CREAD); 
+
+    settings.c_cflag |= PARENB; 
+    settings.c_cflag &= ~PARODD; 
+    settings.c_cflag &= ~CSTOPB; 
+    settings.c_cflag &= ~CSIZE; 
+    settings.c_cflag |= CS8;
+
+    //settings.c_iflag = 1; 
+    settings.c_iflag = (INPCK | ISTRIP);
+    settings.c_oflag = 0; 
+    settings.c_lflag = 0; 
+
+    f->f_op->unlocked_ioctl(f, TCSETS, (unsigned long)&settings);
+    set_fs(oldfs);
+    filp_close(f, NULL);
+    printk("open esp8266!\n");
     return 0;
 }
 
 static ssize_t esp8266_write(struct file *file, const char __user *buf, size_t count, loff_t * ppos)
 {
-    unsigned char *tmp = (unsigned char *)kmalloc(count, GFP_KERNEL);
-    int i = 0;
-    int error;
-    
-    if (tmp == NULL)
-    {
-        printk("kmalloc failed!\n");
-        return -1;
-    }
-    for (i = 0; i < count; i++)
-    {
-        error = copy_from_user(&tmp[i], buf, 1);
-        if (error < 0)
-            printk("copy from user failed!");
-        else
-        {
-            printk("tmp[i] is: %d\n", tmp[i]);
-            uart_write(tmp[i]);
-        }
-    }
-    kfree(tmp);
+    char tmp = 0x08;
+    printk("esp8266 write");
+    uart_write(tmp);
     return 0;
 }
 
@@ -142,9 +182,7 @@ static ssize_t esp8266_read(struct file *file, char __user *buf, size_t count, l
     int error = 0;
     
     data = uart_read();
-    error = copy_to_user(buf, (void *)data, count);
-    if (error < 0)
-        printk("copy_to_user failed!\n");
+    printk("data is: %0x\n", data);
     return 0;
 }
 
@@ -169,9 +207,6 @@ static int esp8266_init(void)
     esp8266_class = class_create(THIS_MODULE, "esp8266");
     esp8266_class_dev = (struct class_device*)device_create(esp8266_class, NULL, MKDEV(major, 0), NULL, "esp8266"); /* 只要加载后就会自动创建设备节点 /dev/esp8266 */
     
-    /*映射引脚*/
-    gpbcon = (volatile unsigned long *)ioremap(0x56000010, 12);
-    gpbdat = gpbcon + 1;
     
     return 0;
 }
@@ -181,7 +216,6 @@ static void esp8266_exit(void)
     device_destroy(esp8266_class, MKDEV(major, 0));
     class_destroy(esp8266_class);
     
-    iounmap(gpbcon);
 }
 
 module_init(esp8266_init);

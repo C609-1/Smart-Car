@@ -16,7 +16,8 @@ int main(int argc,char **argv)
 
     printf("hello world\n");
 
-    if(fd=open("/dev/esp8266", O_RDWR)<0)		//打开串口1
+    fd=open("/dev/esp8266", O_RDWR);
+    if(fd<0)		//打开串口1
     {
         printf("open error");
         return 1;
