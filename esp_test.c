@@ -11,10 +11,11 @@
 int main(int argc,char **argv)
 {
     int fd;
-    char buff[1];
-    buff[0]=0x1;
+    char buff[11];
+    int i = 0;
 
-    printf("hello world\n");
+    memset(buff, 0, sizeof(buff));
+    printf("esp test beign\n");
 
     fd=open("/dev/esp8266", O_RDWR);
     if(fd<0)		//打开串口1
@@ -23,9 +24,9 @@ int main(int argc,char **argv)
         return 1;
     }
 
-    read(fd, buff, 1);
-    printf("%0x\n", buff[0]);
-    printf("hello zzx4\n");
+    write(fd, buff, 1);
+    
+    printf("esp test end\n");
 
     close(fd);
 

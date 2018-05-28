@@ -202,10 +202,11 @@ int main()
     int fd;    
     int ret;    
     //char str[]="hello linux serial!";    
-    char buf[1];    
-    buf[0] = 0x04;
+    char buf[11];
+    int i = 0;
     
-    fd =  serial_init("/dev/ttySAC1",9600,1);    
+    memset(buf, 0, sizeof(buf));
+    fd =  serial_init("/dev/ttySAC1",115200,1);    
     if(fd < 0)    
     {    
         printf("serial init err:");    
@@ -214,8 +215,9 @@ int main()
     
     //ret = serial_send(fd,str,22);    
     //printf("send %d bytes!\n",ret);    
-    serial_read(fd,buf,1,5000);    
-    printf("the buf is :%x\n",buf[0]);    
+    serial_read(fd,buf,11,5000);    
+    for (i = 0; i < sizeof(buf); i++)
+        printf("%0x\n", buf[i]);
     close(fd);    
     return 0;    
 }
