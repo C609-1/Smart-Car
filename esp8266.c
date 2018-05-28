@@ -37,7 +37,11 @@ static struct class *esp8266_class;
 static struct class_device *esp8266_class_dev;
 
 static struct timer_list  esp8266_timer;                /*定义一个定时器*/
-int time_status;        //定时器时间到设置的变量
+static DECLARE_WAIT_QUEUE_HEAD(esp8266_waitq);       /*定义一个队列*/
+volatile int time_status;            //定时器时间到设置的变量
+volatile int have_data = 0;          //是否有数据
+
+
 
 static struct uart_read_opt {
     unsigned char *data;
@@ -74,6 +78,9 @@ static void uart_write(unsigned char data)
 
 /*串口读函数
 count:读多少个字节
+
+每次只能读8个字节，故发送字节数多于8个字节时，分多次读取
+故：每次发送要一定时间间隔
 */
 static struct uart_read_opt uart_read(int count)
 {
@@ -81,35 +88,17 @@ static struct uart_read_opt uart_read(int count)
     unsigned char *data;
     mm_segment_t old_fs;
     long timeout = 1000;
-    struct termios settings;
     int length = 0;
     struct uart_read_opt res;
     int i = 0;
+    int j = 0;
+    int times = 0;          //判断读几次
     
     old_fs = get_fs();
     set_fs(get_ds());
     
-    filep = filp_open("/dev/ttySAC1", O_RDWR | O_NDELAY , 0777);
+    filep = filp_open("/dev/ttySAC1", O_RDWR, 0777);
     
-    filep->f_op->unlocked_ioctl(filep, TCGETS, (unsigned long)&settings); 
-
-    settings.c_cflag &= ~CBAUD; 
-    settings.c_cflag |= B115200; 
-
-    settings.c_cflag |= (CLOCAL | CREAD); 
-
-    settings.c_cflag |= PARENB; 
-    settings.c_cflag &= ~PARODD; 
-    settings.c_cflag &= ~CSTOPB; 
-    settings.c_cflag &= ~CSIZE; 
-    settings.c_cflag |= CS8;
-
-    //settings.c_iflag = 1; 
-    settings.c_iflag = (INPCK | ISTRIP);
-    settings.c_oflag = 0; 
-    settings.c_lflag = 0; 
-
-    filep->f_op->unlocked_ioctl(filep, TCSETS, (unsigned long)&settings);
     
     if (IS_ERR(filep))
     {
@@ -118,7 +107,7 @@ static struct uart_read_opt uart_read(int count)
         res.length = -1;
         return res;
     }
-
+    
     if (filep->f_op->poll)
     {
         struct poll_wqueues table;
@@ -134,6 +123,8 @@ static struct uart_read_opt uart_read(int count)
             mask = filep->f_op->poll(filep, &table.pt); 
             if (mask & (POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR)) 
             { 
+                have_data = 1;      //有数据
+                wake_up_interruptible(&esp8266_waitq);      /*唤醒休眠的进程*/
                 break; 
             } 
             do_gettimeofday(&now); 
@@ -147,19 +138,30 @@ static struct uart_read_opt uart_read(int count)
         }
         poll_freewait(&table);
     }
+
     filep->f_pos = 0;
     data = (unsigned char *)kmalloc(count, GFP_KERNEL);
     printk("count is: %d\n", count);
-    if ((length = filep->f_op->read(filep, data, count, &filep->f_pos)) > 0) 
+    
+    /*判断读几次*/
+    if (count%8 > 0)
+        times = 1+count/8;
+    else
+        times = 1;
+    for (j = 0; j < times; j++)
     {
-        printk("uart_read has recive length is: %d\n", length);
-        for (i = 0; i < length; i++)
-            printk("%0x", data[i]);
-    }
-    else 
-    {
-        kfree(data);
-        printk("debug: failed\n");
+        if ((length = filep->f_op->read(filep, data, 8, &filep->f_pos)) > 0) 
+        {
+            printk("uart_read has recive length is: %d\n", length);
+            for (i = 0; i < length; i++)
+                printk("%0x", data[i]);
+            printk("\n");
+            data = data + length;
+        }
+        else 
+        {
+            printk("debug: failed\n");
+        }
     }
     set_fs(old_fs);
     filp_close(filep, NULL);
@@ -167,7 +169,10 @@ static struct uart_read_opt uart_read(int count)
     if (length > 0)
         res.data = data;
     else
+    {
+        kfree(data);
         res.data = NULL;
+    }
     res.length = length;
     
     return res;
@@ -190,7 +195,7 @@ static unsigned char esp8266_check_cmd(unsigned char *str, unsigned int length)
     int i = 0;
 
     /*尝试读数据*/
-    recv = uart_read(2);
+    recv = uart_read(length+9);
     data = recv.data;
     size = recv.length;
     
@@ -310,7 +315,7 @@ static int esp8266_open(struct inode *inode, struct file *file)
     set_fs(KERNEL_DS);  
     // Set speed 
      
-    f = filp_open("/dev/ttySAC1", O_RDWR | O_NDELAY | O_NOCTTY , 0777);
+    f = filp_open("/dev/ttySAC1", O_RDWR | O_NONBLOCK , 0777);
     f->f_op->unlocked_ioctl(f, TCGETS, (unsigned long)&settings); 
 
     settings.c_cflag &= ~CBAUD; 
@@ -318,16 +323,20 @@ static int esp8266_open(struct inode *inode, struct file *file)
 
     settings.c_cflag |= (CLOCAL | CREAD); 
 
-    settings.c_cflag |= PARENB; 
+    settings.c_cflag &= ~PARENB; 
     settings.c_cflag &= ~PARODD; 
     settings.c_cflag &= ~CSTOPB; 
     settings.c_cflag &= ~CSIZE; 
     settings.c_cflag |= CS8;
+    
 
     //settings.c_iflag = 1; 
-    settings.c_iflag = (INPCK | ISTRIP);
+    settings.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP    
+                | INLCR | IGNCR | ICRNL | IXON);
     settings.c_oflag = 0; 
     settings.c_lflag = 0; 
+    //settings.c_cc[VTIME] = 1;
+    //settings.c_cc[VMIN] = 0;
 
     f->f_op->unlocked_ioctl(f, TCSETS, (unsigned long)&settings);
     set_fs(oldfs);
@@ -339,14 +348,11 @@ static int esp8266_open(struct inode *inode, struct file *file)
 static ssize_t esp8266_write(struct file *file, const char __user *buf, size_t count, loff_t * ppos)
 {
     /*发送指令*/
-    unsigned char cmd[3];
+    unsigned char *cmd = "AT+CIPMODE=0";
     unsigned char ack[2];
     unsigned int waittime;
     unsigned int length = 0;
     
-    cmd[0] = 'A';
-    cmd[1] = 'T';
-    cmd[2] = '\0';
     ack[0] = 'O';
     ack[1] = 'K';
     waittime = 20;
@@ -360,23 +366,39 @@ static ssize_t esp8266_write(struct file *file, const char __user *buf, size_t c
 
 static ssize_t esp8266_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
-    struct uart_read_opt recv;
-    unsigned char *data;
-    int i = 0;
+    struct uart_read_opt ret;
     
-    recv = uart_read(11);
-    data = recv.data;
-    if (recv.length > 0)
-    {
-        for (i = 0; i < recv.length; i++)
-            printk("data is: %0x\n", data[i]);
-    }
-    kfree(data);
+    do {
+        ret = uart_read(count);
+        if (ret.length <= 0)
+        {
+            have_data = 0;
+            wait_event_interruptible(esp8266_waitq, have_data);
+        }
+        else
+            have_data = 1;
+    }while(!have_data);
+    /*读数据到用户空间*/
+    copy_to_user(buf, ret.data, count);
+    kfree(ret.data);
+    
     return 0;
 }
 
 static int esp8266_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
 {
+    return 0;
+}
+
+/*判断esp8266是否可以读*/
+static ssize_t esp8266_poll(struct file *filp, poll_table *wait)
+{
+    unsigned int mask = 0;
+    poll_wait(filp, &esp8266_waitq, wait); // 不会立即休眠
+
+    if(have_data)
+        mask |= POLLIN | POLLRDNORM;
+    return mask;
     return 0;
 }
 
@@ -386,6 +408,7 @@ static struct file_operations  esp8266_fops = {
     .write           =   esp8266_write,
     .read            =   esp8266_read,
     .unlocked_ioctl  =   esp8266_ioctl,
+    .poll            =   esp8266_poll,
 };
 
 int  major;
