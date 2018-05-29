@@ -24,23 +24,12 @@ int main(int argc,char **argv)
         return 1;
     }
 
-    //read(fd, buff, 1);
-    /*循环查询*/
     while (1)
     {
-        //  int poll(struct pollfd *fds, nfds_t nfds, int timeout); 
-        /*  
-            fds：struct pollfd 数组，其中管理了文件描述以及输入参数
-            ndfs: 需要通过 poll 机制管理的文件描述符数量
-            timeout：超时时间，单位为毫秒
-        */
-        ret = poll(fds, 1, 5000);
-        if (ret)
-        {
-            read(fd, buff, 11);
-            for (i = 0; i < 11; i++)
-                printf("%0x", buff[i]);
-        }
+        ret = read(fd, buff, 11);
+        if (ret > 0)
+            for (i = 0; i < ret; i++)
+                printf("%0x,",buff[i]);
     }
     printf("esp test end\n");
 

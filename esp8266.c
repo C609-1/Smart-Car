@@ -78,11 +78,15 @@ static void uart_write(unsigned char data)
 
 /*串口读函数
 count:读多少个字节
+mode: 0: 供内部调用
+      1：供esp8266_read函数调用
+
+函数内有select、poll机制，故可以使用轮询来调用此函数
 
 每次只能读8个字节，故发送字节数多于8个字节时，分多次读取
 故：每次发送要一定时间间隔
 */
-static struct uart_read_opt uart_read(int count)
+static struct uart_read_opt uart_read(unsigned int count, unsigned int mode)
 {
     struct file *filep;
     unsigned char *data;
@@ -123,8 +127,8 @@ static struct uart_read_opt uart_read(int count)
             mask = filep->f_op->poll(filep, &table.pt); 
             if (mask & (POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR)) 
             { 
-                have_data = 1;      //有数据
-                wake_up_interruptible(&esp8266_waitq);      /*唤醒休眠的进程*/
+                if (mode == 1)
+                    have_data = 1;
                 break; 
             } 
             do_gettimeofday(&now); 
@@ -195,7 +199,7 @@ static unsigned char esp8266_check_cmd(unsigned char *str, unsigned int length)
     int i = 0;
 
     /*尝试读数据*/
-    recv = uart_read(length+9);
+    recv = uart_read(length+9, 0);
     data = recv.data;
     size = recv.length;
     
@@ -368,16 +372,12 @@ static ssize_t esp8266_read(struct file *file, char __user *buf, size_t count, l
 {
     struct uart_read_opt ret;
     
-    do {
-        ret = uart_read(count);
-        if (ret.length <= 0)
-        {
-            have_data = 0;
-            wait_event_interruptible(esp8266_waitq, have_data);
-        }
-        else
-            have_data = 1;
-    }while(!have_data);
+    /*使用while循环轮询uart_read函数，因为此函数有select、poll机制*/
+    while (!have_data)
+    {
+        ret = uart_read(count, 1);
+    }
+    have_data = 0;
     /*读数据到用户空间*/
     copy_to_user(buf, ret.data, count);
     kfree(ret.data);
