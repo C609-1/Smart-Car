@@ -178,7 +178,7 @@ static struct uart_read_opt uart_read(unsigned int count, unsigned int mode)
     filep->f_pos = 0;
     data = (unsigned char *)kmalloc(count, GFP_KERNEL);
     tmp = data;
-    printk("count is: %d\n", count);
+    //printk("count is: %d\n", count);
     
     /*判断读几次*/
     if (count%8 > 0)
@@ -187,6 +187,15 @@ static struct uart_read_opt uart_read(unsigned int count, unsigned int mode)
         times = 1;
     if (readFlag==1 || have_data==1)
     {
+        if (have_data == 1)
+        {
+            /*read函数调用读，放弃前面9个字节*/
+            unsigned char tmp_1[11];
+            filep->f_op->read(filep, tmp_1, 8, &filep->f_pos);
+            filep->f_op->read(filep, tmp_1+8, 3, &filep->f_pos);
+            /*读取发送过来的信息*/
+            
+        }
         for (j = 0; j < times; j++)
         {
             if ((length = filep->f_op->read(filep, data, 8, &filep->f_pos)) > 0) 
@@ -529,18 +538,25 @@ static ssize_t esp8266_read(struct file *file, char __user *buf, size_t count, l
     struct uart_read_opt ret;
     int res = 0;
     /*使用while循环轮询uart_read函数，因为此函数有select、poll机制*/
-    while (!have_data)
-    {
-        ret = uart_read(count, 1);
-    }
+    ret = uart_read(count, 1);
     have_data = 0;
     /*读数据到用户空间*/
     if (ret.length > 0)
     {
-        res = copy_to_user(buf, ret.data, count);
+        res = copy_to_user(buf, ret.data, ret.length);
         if (res < 0)
             printk("copy_to_user failed!!!\n");
         kfree(ret.data);
+    }
+    else
+    {
+        /*没有读到数据，返回空给用户空间*/
+        char *tmp = kmalloc(count, GFP_KERNEL);
+        memset(tmp, 0, count);
+        res = copy_to_user(buf, tmp, count);
+        if (res < 0)
+            printk("copy_to_user failed!!!\n");
+        kfree(tmp);
     }
     
     return 0;

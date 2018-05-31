@@ -35,9 +35,10 @@ int main(int argc,char **argv)
 {
     int fd;
     char buff[] = "hello esp8266";
-    char recbuff[12];
+    char recbuff[8];
     int i = 0;
     int ret = 0;
+    int flag = 0;
     struct esp8266_settings settings;
     unsigned char wifiap_ssid[] = "esp8266_test";
     unsigned char wifiap_encryption[] = "wpawpa2_aes";
@@ -72,17 +73,43 @@ int main(int argc,char **argv)
         return 1;
     }
     /*2、确保连接成功*/
-    read(fd, recbuff, sizeof(recbuff));
-    for (i = 0; i < sizeof(recbuff); i++)
+    while (!flag)
     {
-        printf("%0x", recbuff[i]);
-        printf(" ");
+        read(fd, recbuff, sizeof(recbuff));
+        /*判断返回的数组是否为空*/
+        for (i = 0; i < sizeof(recbuff); i++)
+        {
+            if (recbuff[i] != 0)
+            {
+                flag = 1;               //接收到数据
+                break;
+            }
+        }
     }
-    ret = write(fd, buff, sizeof(buff));
-    if (ret < 0)
+    printf("connect success!!!\n");
+    /*3、接收数据*/
+    while (1)
     {
-        printf("write failed!\n");
-        return 1;
+        flag = 0;
+        read(fd, recbuff, sizeof(recbuff));             //read函数使用了select、poll机制故CPU占用率不高
+        /*判断返回的数组是否为空*/
+        for (i = 0; i < sizeof(recbuff); i++)
+        {
+            if (recbuff[i] != 0)
+            {
+                flag = 1;               //接收到数据
+                break;
+            }
+        }
+        if (flag == 1)
+        {
+            printf("Recived data is:\n");
+            for (i = 0; i < sizeof(recbuff); i++)
+            {
+                printf("%c", recbuff[i]);
+            }
+            printf("\n");
+        }
     }
     printf("esp test end\n");
 
