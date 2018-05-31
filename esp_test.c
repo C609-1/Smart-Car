@@ -44,7 +44,6 @@ int main(int argc,char **argv)
     unsigned char wifiap_password[] = "12345678";
 
     
-    memset(buff, 0, sizeof(buff));
     memset(&settings, 0, sizeof(struct esp8266_settings));
     printf("esp test beign\n");
     settings.portnum = 8086;

@@ -341,7 +341,11 @@ static unsigned char esp8266_send_data(unsigned char *data, unsigned char *ack, 
             return 1;
         data++;
     }
-    
+    /*发送结束符*/
+    if (uart_write('\r'))
+        return 1;
+    if (uart_write('\n'))
+        return 1;
     /*需要等待应答*/
     if (*ack!=' ' && waittime>0)
     {
@@ -509,7 +513,7 @@ static ssize_t esp8266_write(struct file *file, const char __user *buf, size_t c
     
     /*发送数据*/
     printk("send data is: %s\n", data);
-    if (esp8266_send_data(data, ack, waittime))
+    if (esp8266_send_data(data, ack, 0))
         printk("esp8266 send data failed!!!!\n");
     else
         printk("esp8266 send data success!!!\n");
